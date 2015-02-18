@@ -20,9 +20,9 @@ CMDS_WIFI = {
     'LIST_APS': b'AT+CWLAP',
     'DISCONNECT': b'AT+CWQAP',
     'AP_SET_PARAMS': b'AT+CWSAP',
-    'AP_LIST_CLIENTS': b'AT+CWLIF',
-    'AP_DHCP': b'AT+CWDHCP',
-    'AUTO_CONNECT': b'AT+CWAUTOCONN',
+    'AP_LIST_STATIONS': b'AT+CWLIF',
+    'DHCP_CONFIG': b'AT+CWDHCP',
+    'SET_AUTOCONNECT': b'AT+CWAUTOCONN',
     'SET_STATION_MAC': b'AT+CIPSTAMAC',
     'SET_AP_MAC': b'AT+CIPAPMAC',
     'SET_STATION_IP': b'AT+CIPSTA',
@@ -94,11 +94,12 @@ class ESP8266(object):
     def _send_command(self, cmd, timeout=0, debug=False):
         """Send a command to the ESP8266 module over UART and return the 
         output.
-        After sending the command there is a 1 second timeout while waiting 
-        for an anser on UART. For long running commands (like AP scans) there 
-        is an additional 3 seconds grace period to return results over UART.
-        Raises an CommandError if an error occurs and an CommandFailure if a 
-        command fails to execute."""
+        After sending the command there is a 1 second timeout while 
+        waiting for an anser on UART. For long running commands (like AP 
+        scans) there is an additional 3 seconds grace period to return 
+        results over UART.
+        Raises an CommandError if an error occurs and an CommandFailure 
+        if a command fails to execute."""
         if debug:
             start = micros()
         cmd_output = []
@@ -166,29 +167,35 @@ class ESP8266(object):
         return cmd_output
     
     @classmethod
-    def _join_args(cls, *args):
-        """Joins all given arguments as the ESP8266 needs them for the argument 
-        string in a 'set' type command.
+    def _join_args(cls, *args, debug=True):
+        """Joins all given arguments as the ESP8266 needs them for the 
+        argument string in a 'set' type command.
         Strings must be quoted using '"' and no spaces outside of quoted 
         srrings are allowed."""
         while type(args[0]) is tuple:
             if len(args) == 1:
                 args = args[0]
+        if debug:
+            print(args)
         str_args = []
         for arg in args:
             if type(arg) is str:
                 str_args.append('"' + arg + '"')
             elif type(arg) is bytes:
                 str_args.append(arg.decode())
+            elif type(arg) is bool:
+                str_args.append(str(int(arg)))
             else:
                 str_args.append(str(arg))
+        if debug:
+            print(str_args)
         return ','.join(str_args).encode()
         
     @classmethod
     def _parse_accesspoint_str(cls, ap_str):
-        """Parse an accesspoint string description into a hashmap containing 
-        its parameters. Returns None if string could not be split into 5 
-        fields."""
+        """Parse an accesspoint string description into a hashmap 
+        containing its parameters. Returns None if string could not be 
+        split into 5 fields."""
         if type(ap_str) is str:
             ap_str = ap_str.encode()
         ap_params = ap_str.split(b',')
@@ -206,18 +213,21 @@ class ESP8266(object):
         return ap
         
     def _query_command(self, cmd, timeout=0, debug=False):
-        """Sends a 'query' type command and return the relevant output line, 
-        containing the queried parameter."""
+        """Sends a 'query' type command and return the relevant output 
+        line, containing the queried parameter."""
         return self._send_command(cmd + b'?', timeout=timeout, debug=debug)[1].rstrip()
             
     def _set_command(self, cmd, *args, timeout=0, debug=False):
-        """Send a 'set' type command and return all lines of the output which 
-        are not command echo and status codes."""
-        return self._send_command(cmd + b'=' + ESP8266._join_args(args), timeout=timeout, debug=debug)[1:-2]
+        """Send a 'set' type command and return all lines of the output 
+        which are not command echo and status codes.
+        This type of AT command usually does not return output except 
+        the echo and 'OK' or 'ERROR'. These are not returned by this 
+        method. So usually the result of this methid must be an empty list!"""
+        return self._send_command(cmd + b'=' + ESP8266._join_args(args, debug=debug), timeout=timeout, debug=debug)[1:-2]
         
     def _execute_command(self, cmd, timeout=0, debug=False):
-        """Send an 'execute' type command and return all lines of the output 
-        which are not command echo and status codes."""
+        """Send an 'execute' type command and return all lines of the 
+        output which are not command echo and status codes."""
         return self._send_command(cmd, timeout=timeout, debug=debug)[1:-2]
 
     def test(self):
@@ -226,8 +236,8 @@ class ESP8266(object):
         
     def reset(self, debug=False):
         """Reset the module and read the boot message.
-        ToDo: Interpret the boot message and do something reasonable with it, 
-        if possible."""
+        ToDo: Interpret the boot message and do something reasonable with
+        it, if possible."""
         boot_log = []
         if debug:
             start = micros()
@@ -303,12 +313,11 @@ class ESP8266(object):
     def _parse_list_ap_results(cls, ap_scan_results):
         aps = []
         for ap in ap_scan_results:
-            print(ap)
             try:
                 ap_str = ap.rstrip().split(CMDS_WIFI['LIST_APS'][-4:] + b':')[1].decode()[1:-1]
             except IndexError:
-                # Catching this exception means line in result was probably rubbish
-                print("#&5§!!!")
+                # Catching this exception means the line in scan result 
+                # was probably rubbish
                 continue
             # parsing the ap_str may not work because of rubbish strings 
             # returned from the AT command. None is returned in this case.
@@ -338,10 +347,11 @@ class ESP8266(object):
         activate them.
         The password must be at least 8 characters long up to a maximum of 
         64 characters.
+        WEP is not allowed to be an encryption protocol. 
         Raises CommandFailure in case the WIFI mode is not set to mode 2 
         (access point) or 3 (access point and station) or the WIFI 
         parameters are not valid."""
-        if WIFI.getmode() not in (2, 3):
+        if self.get_mode() not in (2, 3):
             raise CommandFailure('WIFI not set to an access point mode!')
         if type(ssid) is not str:
             raise CommandFailure('SSID must be of type str!')
@@ -351,9 +361,9 @@ class ESP8266(object):
             raise CommandFailure('Wrong password length (8..64)!')
         if channel not in range(1, 15) and type(channel) is not int:
             raise CommandFailure('Invalid WIFI channel!')
-        if encrypt_proto not in (0, 2, 3, 4) and type(encrypt_proto) is not int:
+        if encrypt_proto not in (0, 2, 3, 4) or type(encrypt_proto) is not int:
             raise CommandFailure('Invalid encryption protocol!')
-        self._set_command(CMDS_WIFI['AP_SET_PARAMS'], ssid, password, channel, encrypt_proto, debug=True)
+        self._set_command(CMDS_WIFI['AP_SET_PARAMS'], ssid, password, channel, encrypt_proto, debug=False)
         self.reset()
         
     def get_accesspoint_config(self):
@@ -361,32 +371,88 @@ class ESP8266(object):
         be in an acces point mode to work.
         Returns a hashmap containing the access point parameters.
         Raises CommandFailure in case of wrong WIFI mode set."""
-        if WIFI.getmode() not in (2, 3):
+        if self.get_mode() not in (2, 3):
             raise CommandFailure('WIFI not set to an access point mode!')
-        (ssid, password, channel, encryption_protocol) = self._query_command(CMDS_WIFI['AP_SET_PARAMS'], debug=True).split(b':')[1].split(b',')
+        (ssid, password, channel, encryption_protocol) = self._query_command(CMDS_WIFI['AP_SET_PARAMS'], debug=False).split(b':')[1].split(b',')
         return {
             'ssid': ssid,
             'password': password,
             'channel': int(channel),
             'encryption_protocol': int(encryption_protocol)
             }
-                
-        def get_connection_status(self):
-            """Get connection information."""
-            return self._execute_command(CMDS_IP['STATUS'])
             
-        def start_connection(self, protocol, dest_ip, dest_port):
-            """Start a TCP or UDP connection. 
-            ToDo: Implement MUX mode. Currently only single connection mode is
-            supported!"""
-            self._set_command(CMDS_IP['START'], protocol, dest_ip, dest_port, debug=True)
-            
-        def send(self, data):
-            """Send data over the current connection."""
-            self._set_command(CMDS_IP['SEND'], len(data), debug=True)
-            print(b'>' + data)
-            self.uart.write(data)
-            
-        def ping(self, destination):
-            """Ping the destination address or hostname."""
-            return self._set_command(CMDS_IP['PING'], destination)
+    def list_stations(self):
+        """List IPs of stations which are connected to the access point.
+        ToDo: Parse result and return python list of IPs (as str)."""
+        return self._execute_command(CMDS_WIFI['AP_LIST_STATIONS'], debug=False)
+    
+    def set_dhcp_config(self, mode, status):
+        """Set the DHCP configuration for a specific mode.
+        
+        Oddities:
+        The mode seems not to be the WIFI mode known from the methods 
+        set_mode() and get_mode(). The mode are as follows according to 
+        the Esspressif documentation:
+          0: access point (softAP)
+          1: station
+          2: access point and station
+        The second argument (status) is strange as well:
+          0: enable
+          1: disable
+        """
+        # Invert status to make the call to this methid reasonable.
+        if type(status) is int:
+            status = bool(status)
+        if type(status) is bool:
+            status = not status
+        return self._set_command(CMDS_WIFI['DHCP_CONFIG'], mode, status, debug=False)
+        
+    def set_autoconnect(self, autoconnect):
+        """Set if the module should connnect to an access point on 
+        startup."""
+        return self._set_command(CMDS_WIFI['SET_AUTOCONNECT'], autoconnect, debug=False)
+    
+    def get_station_ip(self):
+        """get the IP address of the module in station mode.
+        The IP address must be given as a string. No check on the 
+        correctness of the IP address is made."""
+        return self._query_command(CMDS_WIFI['SET_STATION_IP'], debug=False)
+        
+    def set_station_ip(self, ip_str):
+        """Set the IP address of the module in station mode.
+        The IP address must be given as a string. No check on the 
+        correctness of the IP address is made."""
+        return self._set_command(CMDS_WIFI['SET_STATION_IP'], ip_str, debug=False)
+    
+    def get_accesspoint_ip(self):
+        """get the IP address of the module in access point mode.
+        The IP address must be given as a string. No check on the 
+        correctness of the IP address is made."""
+        return self._query_command(CMDS_WIFI['SET_AP_IP'], debug=False)
+        
+    def set_accesspoint_ip(self, ip_str):
+        """Set the IP address of the module in access point mode.
+        The IP address must be given as a string. No check on the 
+        correctness of the IP address is made."""
+        return self._set_command(CMDS_WIFI['SET_AP_IP'], ip_str, debug=False)
+    
+    def get_connection_status(self):
+        """Get connection information.
+        ToDo: Parse returned data and return python data structure."""
+        return self._execute_command(CMDS_IP['STATUS'])
+        
+    def start_connection(self, protocol, dest_ip, dest_port):
+        """Start a TCP or UDP connection. 
+        ToDo: Implement MUX mode. Currently only single connection mode is
+        supported!"""
+        self._set_command(CMDS_IP['START'], protocol, dest_ip, dest_port, debug=False)
+        
+    def send(self, data):
+        """Send data over the current connection."""
+        self._set_command(CMDS_IP['SEND'], len(data), debug=True)
+        print(b'>' + data)
+        self.uart.write(data)
+        
+    def ping(self, destination):
+        """Ping the destination address or hostname."""
+        return self._set_command(CMDS_IP['PING'], destination)
