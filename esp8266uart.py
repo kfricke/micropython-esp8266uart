@@ -2,8 +2,7 @@ from pyb import UART
 from pyb import delay
 from pyb import micros, elapsed_micros
 
-uart = UART(1, 115200)
-
+# This hashmap collects all generic AT commands
 CMDS_GENERIC = {
     'TEST_AT': b'AT',
     'RESET': b'AT+RST',
@@ -14,6 +13,7 @@ CMDS_GENERIC = {
     'UART_CONFIG': b'AT+UART'
     }
 
+# All WIFI related AT commands
 CMDS_WIFI = {
     'MODE' : b'AT+CWMODE',
     'CONNECT': b'AT+CWJAP',
@@ -29,6 +29,7 @@ CMDS_WIFI = {
     'SET_AP_IP': b'AT+CIPAP'
     }
 
+# IP networking related AT commands
 CMDS_IP = {
     'STATUS': b'AT+CIPSTATUS',
     'START': b'AT+CIPSTART',
@@ -43,12 +44,17 @@ CMDS_IP = {
     'PING': b'AT+PING'
     }
     
+# WIFI network modes the ESP8266 knows to handle
 WIFI_MODES = {
     1: 'Station',
     2: 'Access Point',
-    3: 'Access Point + Station'
+    3: 'Access Point + Station',
     }
+# Reverse feed lookup table
+for key in WIFI_MODES.keys():
+    WIFI_MODES[WIFI_MODES[key]] = key
     
+# WIFI network security protocols known to the ESP8266 module
 WIFI_ENCRYPTION_PROTOCOLS = {
     0: 'OPEN',
     1: 'WEP',
@@ -56,6 +62,9 @@ WIFI_ENCRYPTION_PROTOCOLS = {
     3: 'WPA2_PSK',
     4: 'WPA_WPA2_PSK'
     }
+# Reverse feed lookup table
+for key in WIFI_ENCRYPTION_PROTOCOLS.keys():
+    WIFI_ENCRYPTION_PROTOCOLS[WIFI_ENCRYPTION_PROTOCOLS[key]] = key
 
 class CommandError(Exception):
     pass
@@ -65,191 +74,211 @@ class CommandFailure(Exception):
     
 class UnknownWIFIModeError(Exception):
     pass
-    
-def sendcommand(cmd, timeout=0, debug=False):
-    """Send a command to the ESP8266 module over UART and return the 
-    output.
-    After sending the command there is a 1 second timeout while waiting 
-    for an anser on UART. For long running commands (like AP scans) there 
-    is an additional 3 seconds grace period to return results over UART.
-    Raises an CommandError if an error occurs and an CommandFailure if a 
-    command fails to execute."""
-    if debug:
-        start = micros()
-    output = []
-    okay = False
-    if cmd == '' or cmd == b'':
-        raise CommandError("Unknown command '" + cmd + "'!")
-    # AT commands must be finalized with an '\r\n'
-    cmd += '\r\n'
-    if debug:
-        print("%8i - TX: %s" % (elapsed_micros(start), str(cmd)))
-    uart.write(cmd)
-    # wait at maximum one second for a command reaction
-    cmd_timeout = 100
-    while cmd_timeout > 0:
-        if uart.any():
-            output.append(uart.readline())
+
+class ESP8266(object):
+
+    def __init__(self, uart=1, baud_rate=115200):
+        """Initialize this module. uart may be an integer or an instance 
+        of pyb.UART. baud_rate can be used to set the Baud rate for the 
+        serial communication."""
+        if uart:
+            if type(uart) is int:
+                self.uart = UART(uart, baud_rate)
+            elif type(uart) is UART:
+                self.uart = uart
+            else:
+                raise Exception("Argument 'uart' must be an integer or pyb.UART object!")
+        else:
+            raise Exception("Argument uart must not be 'None'!")
+
+    def _send_command(self, cmd, timeout=0, debug=False):
+        """Send a command to the ESP8266 module over UART and return the 
+        output.
+        After sending the command there is a 1 second timeout while waiting 
+        for an anser on UART. For long running commands (like AP scans) there 
+        is an additional 3 seconds grace period to return results over UART.
+        Raises an CommandError if an error occurs and an CommandFailure if a 
+        command fails to execute."""
+        if debug:
+            start = micros()
+        cmd_output = []
+        okay = False
+        if cmd == '' or cmd == b'':
+            raise CommandError("Unknown command '" + cmd + "'!")
+        # AT commands must be finalized with an '\r\n'
+        cmd += '\r\n'
+        if debug:
+            print("%8i - TX: %s" % (elapsed_micros(start), str(cmd)))
+        self.uart.write(cmd)
+        # wait at maximum one second for a command reaction
+        cmd_timeout = 100
+        while cmd_timeout > 0:
+            if self.uart.any():
+                cmd_output.append(self.uart.readline())
+                if debug:
+                    print("%8i - RX: %s" % (elapsed_micros(start), str(cmd_output[-1])))
+                if cmd_output[-1].rstrip() == b'OK':
+                    if debug:
+                        print("%8i - 'OK' received!" % (elapsed_micros(start)))
+                    okay = True
+                delay(10)
+            cmd_timeout -= 1
+        if cmd_timeout == 0 and len(cmd_output) == 0:
+            print("%8i - RX timeout of answer after sending AT command!" % (elapsed_micros(start)))
+        # read output if present
+        while self.uart.any():
+            cmd_output.append(self.uart.readline())
             if debug:
-                print("%8i - RX: %s" % (elapsed_micros(start), str(output[-1])))
-            if output[-1].rstrip() == b'OK':
+                print("%8i - RX: %s" % (elapsed_micros(start), str(cmd_output[-1])))
+            if cmd_output[-1].rstrip() == b'OK':
                 if debug:
                     print("%8i - 'OK' received!" % (elapsed_micros(start)))
                 okay = True
-            delay(10)
-        cmd_timeout -= 1
-    if cmd_timeout == 0 and len(output) == 0:
-        print("%8i - RX timeout of answer after sending AT command!" % (elapsed_micros(start)))
-    # read output if present
-    while uart.any():
-        output.append(uart.readline())
-        if debug:
-            print("%8i - RX: %s" % (elapsed_micros(start), str(output[-1])))
-        if output[-1].rstrip() == b'OK':
-            if debug:
-                print("%8i - 'OK' received!" % (elapsed_micros(start)))
-            okay = True
-    # handle output of AT command 
-    if len(output > 0):
-        if output[-1].rstrip() == b'ERROR':
-            raise CommandError('Command error!')
-        elif output[-1].rstrip() == b'OK':
-            okay = True
-        elif not okay:
-            # some long running commands do not return OK in case of success 
-            # and/or take some time to yield all output.
-            if timeout == 0:
-                cmd_timeout = 300
-            else:
-                if debug:
-                    print("%8i - Using RX timeout of %i ms" % (elapsed_micros(start), timeout))
-                cmd_timeout = timeout / 10
-            while cmd_timeout > 0:
-                delay(10)
-                if uart.any():
-                    output.append(uart.readline())
+        # handle output of AT command 
+        if len(cmd_output > 0):
+            if cmd_output[-1].rstrip() == b'ERROR':
+                raise CommandError('Command error!')
+            elif cmd_output[-1].rstrip() == b'OK':
+                okay = True
+            elif not okay:
+                # some long running commands do not return OK in case of success 
+                # and/or take some time to yield all output.
+                if timeout == 0:
+                    cmd_timeout = 300
+                else:
                     if debug:
-                        print("%8i - RX: %s" % (elapsed_micros(start), str(output[-1])))
-                    if output[-1].rstrip() == b'OK':
-                        okay = True
-                        break
-                    elif output[-1].rstrip() == b'FAIL':
-                        raise CommandFailure()
-                cmd_timeout -= 1
-        if not okay and cmd_timeout == 0 and debug:
-            print("%8i - RX-Timeout occured and no 'OK' received!" % (elapsed_micros(start)))
-    return output
+                        print("%8i - Using RX timeout of %i ms" % (elapsed_micros(start), timeout))
+                    cmd_timeout = timeout / 10
+                while cmd_timeout > 0:
+                    delay(10)
+                    if self.uart.any():
+                        cmd_output.append(self.uart.readline())
+                        if debug:
+                            print("%8i - RX: %s" % (elapsed_micros(start), str(cmd_output[-1])))
+                        if cmd_output[-1].rstrip() == b'OK':
+                            okay = True
+                            break
+                        elif cmd_output[-1].rstrip() == b'FAIL':
+                            raise CommandFailure()
+                    cmd_timeout -= 1
+            if not okay and cmd_timeout == 0 and debug:
+                print("%8i - RX-Timeout occured and no 'OK' received!" % (elapsed_micros(start)))
+        return cmd_output
     
-def joinargs(*args):
-    """Joins all given arguments as the ESP8266 needs them for the argument 
-    string in a 'set' type command.
-    Strings must be quoted using '"' and no spaces outside of quoted 
-    srrings are allowed."""
-    if len(args) == 1 and type(args) == tuple:
-        args = args[0]
-    str_args = []
-    for arg in args:
-        if type(arg) is str:
-            str_args.append(b'"' + arg + b'"')
-        else:
-            str_args.append(b'' + str(arg))
-    return b','.join(str_args)
-    
-def parseaccesspointstr(ap_str):
-    """Parse an accesspoint string description into a hashmap containing 
-    its parameters. Returns None if string could not be split into 5 
-    fields."""
-    ap_params = ap_str.split(b',')
-    if len(ap_params) == 5:
-        (enc_mode, ssid, rssi, mac, channel) = ap_params
-        ap = {
-            'encryption_protocol': int(enc_mode), 
-            'ssid': ssid, 
-            'rssi': int(rssi), 
-            'mac': mac, 
-            'channel': int(channel)
-            }
-    else:
-        ap = None
-    return ap
-    
-def querycommand(cmd, timeout=0, debug=False):
-    """Sends a 'query' type command and return the relevant output line, 
-    containing the queried parameter."""
-    return sendcommand(cmd + b'?', timeout=timeout, debug=debug)[1].rstrip()
+    @classmethod
+    def _join_args(cls, *args):
+        """Joins all given arguments as the ESP8266 needs them for the argument 
+        string in a 'set' type command.
+        Strings must be quoted using '"' and no spaces outside of quoted 
+        srrings are allowed."""
+        while type(args[0]) is tuple:
+            if len(args) == 1:
+                args = args[0]
+        str_args = []
+        for arg in args:
+            if type(arg) is str:
+                str_args.append('"' + arg + '"')
+            elif type(arg) is bytes:
+                str_args.append(arg.decode())
+            else:
+                str_args.append(str(arg))
+        return ','.join(str_args).encode()
         
-def setcommand(cmd, *args, timeout=0, debug=False):
-    """Send a 'set' type command and return all lines of the output which 
-    are not command echo and status codes."""
-    args_str = joinargs(args)
-    print(args_str)
-    return sendcommand(cmd + b'=' + args_str, timeout=timeout, debug=debug)[1:-2]
-    
-def executecommand(cmd, timeout=0, debug=False):
-    """Send an 'execute' type command and return all lines of the output 
-    which are not command echo and status codes."""
-    return sendcommand(cmd, timeout=timeout, debug=debug)[1:-2]
+    @classmethod
+    def _parse_accesspoint_str(cls, ap_str):
+        """Parse an accesspoint string description into a hashmap containing 
+        its parameters. Returns None if string could not be split into 5 
+        fields."""
+        if type(ap_str) is str:
+            ap_str = ap_str.encode()
+        ap_params = ap_str.split(b',')
+        if len(ap_params) == 5:
+            (enc_mode, ssid, rssi, mac, channel) = ap_params
+            ap = {
+                'encryption_protocol': int(enc_mode), 
+                'ssid': ssid, 
+                'rssi': int(rssi), 
+                'mac': mac, 
+                'channel': int(channel)
+                }
+        else:
+            ap = None
+        return ap
+        
+    def _query_command(self, cmd, timeout=0, debug=False):
+        """Sends a 'query' type command and return the relevant output line, 
+        containing the queried parameter."""
+        return self._send_command(cmd + b'?', timeout=timeout, debug=debug)[1].rstrip()
+            
+    def _set_command(self, cmd, *args, timeout=0, debug=False):
+        """Send a 'set' type command and return all lines of the output which 
+        are not command echo and status codes."""
+        return self._send_command(cmd + b'=' + ESP8266._join_args(args), timeout=timeout, debug=debug)[1:-2]
+        
+    def _execute_command(self, cmd, timeout=0, debug=False):
+        """Send an 'execute' type command and return all lines of the output 
+        which are not command echo and status codes."""
+        return self._send_command(cmd, timeout=timeout, debug=debug)[1:-2]
 
-def test():
-    """Test the AT command interface."""
-    executecommand(CMDS_GENERIC['TEST_AT'], debug=True)
-    
-def reset(debug=True):
-    """Reset the module and read the boot message.
-    ToDo: Interpret the boot message and do something reasonable with it, 
-    if possible."""
-    if debug:
-        start = micros()
-    executecommand(CMDS_GENERIC['RESET'], debug=True)
-    # wait for module to boot and messages appearing on uart
-    timeout = 300
-    while not uart.any() and timeout > 0:
-        delay(10)
-        timeout -= 1
-    if debug and timeout == 0:
-        print("%8i - RX timeout occured!" % (elapsed_micros(start)))
-    # wait for messages to finish
-    timeout = 300
-    while timeout > 0:
-        if uart.any():
-            line = uart.readline()
-            if debug:
-                print("%8i - RX: %s" % (elapsed_micros(start), str(line)))
-        delay(20)
-        timeout -= 1
-    if debug and timeout == 0:
-        print("%8i - RTimeout occured while waiting for module to boot!" % (elapsed_micros(start)))
-    
-class WIFI():
-    """Combines all WIF methods of this API."""
-    
-    def getmode():
+    def test(self):
+        """Test the AT command interface."""
+        return self._execute_command(CMDS_GENERIC['TEST_AT'], debug=False) == []
+        
+    def reset(self, debug=False):
+        """Reset the module and read the boot message.
+        ToDo: Interpret the boot message and do something reasonable with it, 
+        if possible."""
+        boot_log = []
+        if debug:
+            start = micros()
+        self._execute_command(CMDS_GENERIC['RESET'], debug=debug)
+        # wait for module to boot and messages appearing on self.uart
+        timeout = 300
+        while not self.uart.any() and timeout > 0:
+            delay(10)
+            timeout -= 1
+        if debug and timeout == 0:
+            print("%8i - RX timeout occured!" % (elapsed_micros(start)))
+        # wait for messages to finish
+        timeout = 300
+        while timeout > 0:
+            if self.uart.any():
+                boot_log.append(self.uart.readline())
+                if debug:
+                    print("%8i - RX: %s" % (elapsed_micros(start), str(boot_log[-1])))
+            delay(20)
+            timeout -= 1
+        if debug and timeout == 0:
+            print("%8i - RTimeout occured while waiting for module to boot!" % (elapsed_micros(start)))
+        return boot_log[-1].rstrip() == b'ready'
+        
+    def get_mode(self):
         """Returns the mode the ESP WIFI is in:
             1: station mode
             2: accesspoint mode
             3: accesspoint and station mode
-        Check the hashmap espuart.WIFI_MODES for a name lookup. 
+        Check the hashmap esp8266.WIFI_MODES for a name lookup. 
         Raises an UnknownWIFIModeError if the mode was not a valid or 
         unknown.
         """
-        mode = int(querycommand(CMDS_WIFI['MODE']).split(b':')[1])
+        mode = int(self._query_command(CMDS_WIFI['MODE']).split(b':')[1])
         if mode in WIFI_MODES.keys():
             return mode
         else:
             raise UnknownWIFIModeError("Mode '%s' not known!" % mode)
             
-    def setmode(mode):
+    def set_mode(self, mode):
         """Set the given WIFI mode.
         Raises UnknownWIFIModeError in case of unknown mode."""
         if mode not in WIFI_MODES.keys():
             raise UnknownWIFIModeError("Mode '%s' not known!" % mode)
-        setcommand(CMDS_WIFI['MODE'], mode)
-    
-    def getaccesspoint():
+        return self._set_command(CMDS_WIFI['MODE'], mode)
+
+    def get_accesspoint(self):
         """Read the SSID of the currently joined access point.
         The SSID 'No AP' tells us that we are not connected to an access 
         point!"""
-        answer = querycommand(CMDS_WIFI["CONNECT"])
+        answer = self._query_command(CMDS_WIFI["CONNECT"])
         #print("Answer: " + str(answer))
         if answer == b'No AP':
             result = None
@@ -257,41 +286,52 @@ class WIFI():
             result = answer.split(b'+' + CMDS_WIFI['CONNECT'][3:] + b':')[1][1:-1]
         return result
         
-    def connect(ssid, psk):
+    def connect(self, ssid, psk):
         """Tries to connect to a WIFI network using the given SSID and 
         pre shared key (PSK). Uses a 20 second timeout for the connect 
-        command."""
-        setcommand(CMDS_WIFI['CONNECT'], ssid, psk, debug=True, timeout=20000)
-    
-    def disconnect():
+        command.
+        Bugs: AT firmware v0.21 has a bug to only join a WIFI which SSID 
+        is 10 characters long."""
+        self._set_command(CMDS_WIFI['CONNECT'], ssid, psk, debug=True, timeout=20000)
+
+    def disconnect(self):
         """Tries to connect to a WIFI network using the given SSID and 
         pre shared key (PSK)."""
-        executecommand(CMDS_WIFI['DISCONNECT'])
+        return self._execute_command(CMDS_WIFI['DISCONNECT']) == []
         
-    def listallaccesspoints():
-        """List all available access points.
-        TODO: The IoT AT firmware 0.9.5 seems to sporadically yield 
-        rubbish or mangled AP-strings. Check needed!"""
+    @classmethod
+    def _parse_list_ap_results(cls, ap_scan_results):
         aps = []
-        answer = executecommand(CMDS_WIFI['LIST_APS'])
-        for ap in answer:
-            ap_str = ap.rstrip().split(b'+' + CMDS_WIFI['LIST_APS'][3:] + b':')[1][1:-1]
+        for ap in ap_scan_results:
+            print(ap)
+            try:
+                ap_str = ap.rstrip().split(CMDS_WIFI['LIST_APS'][-4:] + b':')[1].decode()[1:-1]
+            except IndexError:
+                # Catching this exception means line in result was probably rubbish
+                print("#&5§!!!")
+                continue
             # parsing the ap_str may not work because of rubbish strings 
             # returned from the AT command. None is returned in this case.
-            ap = paresaccesspointstr(ap_str)
+            ap = ESP8266._parse_accesspoint_str(ap_str)
             if ap:
                 aps.append(ap)
         return aps
         
-    def listaccesspoints(*args):
+    def list_all_accesspoints(self):
+        """List all available access points.
+        TODO: The IoT AT firmware 0.9.5 seems to sporadically yield 
+        rubbish or mangled AP-strings. Check needed!"""
+        return ESP8266._parse_list_ap_results(self._execute_command(CMDS_WIFI['LIST_APS']))
+        
+    def list_accesspoints(self, *args):
         """List accesspoint matching the parameters given by the 
         argument list.
         The arguments may be of the types string or integer. Strings can 
         describe MAC adddresses or SSIDs while the integers refer to 
         channel names."""
-        return setcommand(CMDS_WIFI['LIST_APS'], args, debug=True)
+        return ESP8266._parse_list_ap_results(self._set_command(CMDS_WIFI['LIST_APS'], args))
         
-    def setaccesspointconfig(ssid, password, channel, encrypt_proto):
+    def set_accesspoint_config(self, ssid, password, channel, encrypt_proto):
         """Configure the parameters for the accesspoint mode. The module 
         must be in access point mode for this to work.
         After setting the parameters the module is reset to 
@@ -313,43 +353,40 @@ class WIFI():
             raise CommandFailure('Invalid WIFI channel!')
         if encrypt_proto not in (0, 2, 3, 4) and type(encrypt_proto) is not int:
             raise CommandFailure('Invalid encryption protocol!')
-        setcommand(CMDS_WIFI['AP_SET_PARAMS'], ssid, password, channel, encrypt_proto, debug=True)
-        reset()
+        self._set_command(CMDS_WIFI['AP_SET_PARAMS'], ssid, password, channel, encrypt_proto, debug=True)
+        self.reset()
         
-    def getaccesspointconfig():
+    def get_accesspoint_config(self):
         """Reads the current access point configuration. The module must 
         be in an acces point mode to work.
         Returns a hashmap containing the access point parameters.
         Raises CommandFailure in case of wrong WIFI mode set."""
         if WIFI.getmode() not in (2, 3):
             raise CommandFailure('WIFI not set to an access point mode!')
-        (ssid, password, channel, encryption_protocol) = querycommand(CMDS_WIFI['AP_SET_PARAMS'], debug=True).split(b':')[1].split(b',')
+        (ssid, password, channel, encryption_protocol) = self._query_command(CMDS_WIFI['AP_SET_PARAMS'], debug=True).split(b':')[1].split(b',')
         return {
             'ssid': ssid,
             'password': password,
             'channel': int(channel),
             'encryption_protocol': int(encryption_protocol)
             }
+                
+        def get_connection_status(self):
+            """Get connection information."""
+            return self._execute_command(CMDS_IP['STATUS'])
             
-class IP():
-    """This class maps the TCP/IP and UDP/IP based commands."""
-    
-    def getconnectionstatus():
-        """Get connection information."""
-        return executecommand(CMDS_IP['STATUS'])
-        
-    def startconnection(protocol, dest_ip, dest_port):
-        """Start a TCP or UDP connection. 
-        ToDo: Implement MUX mode. Currently only single connection mode is
-        supported!"""
-        setcommand(CMDS_IP['START'], protocol, dest_ip, dest_port, debug=True)
-        
-    def send(data):
-        """Send data over the current connection."""
-        setcommand(CMDS_IP['SEND'], len(data), debug=True)
-        print(b'>' + data)
-        uart.write(data)
-        
-    def ping(destination):
-        """Ping the destination address or hostname."""
-        return setcommand(CMDS_IP['PING'], destination)
+        def start_connection(self, protocol, dest_ip, dest_port):
+            """Start a TCP or UDP connection. 
+            ToDo: Implement MUX mode. Currently only single connection mode is
+            supported!"""
+            self._set_command(CMDS_IP['START'], protocol, dest_ip, dest_port, debug=True)
+            
+        def send(self, data):
+            """Send data over the current connection."""
+            self._set_command(CMDS_IP['SEND'], len(data), debug=True)
+            print(b'>' + data)
+            self.uart.write(data)
+            
+        def ping(self, destination):
+            """Ping the destination address or hostname."""
+            return self._set_command(CMDS_IP['PING'], destination)
