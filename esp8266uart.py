@@ -125,7 +125,10 @@ class ESP8266(object):
                 delay(10)
             cmd_timeout -= 1
         if cmd_timeout == 0 and len(cmd_output) == 0:
-            print("%8i - RX timeout of answer after sending AT command!" % (elapsed_micros(start)))
+            if debug == True:
+                print("%8i - RX timeout of answer after sending AT command!" % (elapsed_micros(start)))
+            else:
+                print("RX timeout of answer after sending AT command!")
         # read output if present
         while self.uart.any():
             cmd_output.append(self.uart.readline())
@@ -136,7 +139,7 @@ class ESP8266(object):
                     print("%8i - 'OK' received!" % (elapsed_micros(start)))
                 okay = True
         # handle output of AT command 
-        if len(cmd_output > 0):
+        if len(cmd_output) > 0:
             if cmd_output[-1].rstrip() == b'ERROR':
                 raise CommandError('Command error!')
             elif cmd_output[-1].rstrip() == b'OK':
