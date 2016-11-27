@@ -198,7 +198,7 @@ class ESP8266(object):
     def _parse_accesspoint_str(cls, ap_str):
         """Parse an accesspoint string description into a hashmap 
         containing its parameters. Returns None if string could not be 
-        split into 5 fields."""
+        split into 3 or 5 fields."""
         if type(ap_str) is str:
             ap_str = ap_str.encode()
         ap_params = ap_str.split(b',')
@@ -213,7 +213,7 @@ class ESP8266(object):
                 }
         elif len(ap_params) == 3:
             (enc_mode, ssid, rssi) = ap_params
-             ap = {
+            ap = {
                 'encryption_protocol': int(enc_mode),
                 'ssid': ssid,
                 'rssi': int(rssi),
@@ -240,10 +240,10 @@ class ESP8266(object):
         output which are not command echo and status codes."""
         return self._send_command(cmd, timeout=timeout, debug=debug)[1:-2]
 
-    def test(self):
+    def test(self, debug=False):
         """Test the AT command interface."""
-        return self._execute_command(CMDS_GENERIC['TEST_AT'], debug=False) == []
-        
+        return self._execute_command(CMDS_GENERIC['TEST_AT'], debug=debug) == []
+
     def reset(self, debug=False):
         """Reset the module and read the boot message.
         ToDo: Interpret the boot message and do something reasonable with
@@ -272,7 +272,7 @@ class ESP8266(object):
             print("%8i - RTimeout occured while waiting for module to boot!" % (elapsed_micros(start)))
         return boot_log[-1].rstrip() == b'ready'
         
-    def get_mode(self):
+    def get_mode(self, debug=False):
         """Returns the mode the ESP WIFI is in:
             1: station mode
             2: accesspoint mode
@@ -281,24 +281,24 @@ class ESP8266(object):
         Raises an UnknownWIFIModeError if the mode was not a valid or 
         unknown.
         """
-        mode = int(self._query_command(CMDS_WIFI['MODE']).split(b':')[1])
+        mode = int(self._query_command(CMDS_WIFI['MODE']).split(b':')[1], debug=debug)
         if mode in WIFI_MODES.keys():
             return mode
         else:
             raise UnknownWIFIModeError("Mode '%s' not known!" % mode)
             
-    def set_mode(self, mode):
+    def set_mode(self, mode, debug=False):
         """Set the given WIFI mode.
         Raises UnknownWIFIModeError in case of unknown mode."""
         if mode not in WIFI_MODES.keys():
             raise UnknownWIFIModeError("Mode '%s' not known!" % mode)
-        return self._set_command(CMDS_WIFI['MODE'], mode)
+        return self._set_command(CMDS_WIFI['MODE'], mode, debug=debug)
 
-    def get_accesspoint(self):
+    def get_accesspoint(self, debug=False):
         """Read the SSID of the currently joined access point.
         The SSID 'No AP' tells us that we are not connected to an access 
         point!"""
-        answer = self._query_command(CMDS_WIFI["CONNECT"])
+        answer = self._query_command(CMDS_WIFI["CONNECT"], debug=debug)
         #print("Answer: " + str(answer))
         if answer == b'No AP':
             result = None
@@ -306,18 +306,18 @@ class ESP8266(object):
             result = answer.split(b'+' + CMDS_WIFI['CONNECT'][3:] + b':')[1][1:-1]
         return result
         
-    def connect(self, ssid, psk):
+    def connect(self, ssid, psk, debug=False):
         """Tries to connect to a WIFI network using the given SSID and 
         pre shared key (PSK). Uses a 20 second timeout for the connect 
         command.
         Bugs: AT firmware v0.21 has a bug to only join a WIFI which SSID 
         is 10 characters long."""
-        self._set_command(CMDS_WIFI['CONNECT'], ssid, psk, debug=True, timeout=20000)
+        self._set_command(CMDS_WIFI['CONNECT'], ssid, psk, debug=debug, timeout=20000)
 
-    def disconnect(self):
+    def disconnect(self, debug=False):
         """Tries to connect to a WIFI network using the given SSID and 
         pre shared key (PSK)."""
-        return self._execute_command(CMDS_WIFI['DISCONNECT']) == []
+        return self._execute_command(CMDS_WIFI['DISCONNECT'], debug=debug) == []
         
     @classmethod
     def _parse_list_ap_results(cls, ap_scan_results):
@@ -336,11 +336,11 @@ class ESP8266(object):
                 aps.append(ap)
         return aps
         
-    def list_all_accesspoints(self):
+    def list_all_accesspoints(self, debug=False):
         """List all available access points.
         TODO: The IoT AT firmware 0.9.5 seems to sporadically yield 
         rubbish or mangled AP-strings. Check needed!"""
-        return ESP8266._parse_list_ap_results(self._execute_command(CMDS_WIFI['LIST_APS']))
+        return ESP8266._parse_list_ap_results(self._execute_command(CMDS_WIFI['LIST_APS'], debug=debug))
         
     def list_accesspoints(self, *args):
         """List accesspoint matching the parameters given by the 
@@ -350,7 +350,7 @@ class ESP8266(object):
         channel names."""
         return ESP8266._parse_list_ap_results(self._set_command(CMDS_WIFI['LIST_APS'], args))
         
-    def set_accesspoint_config(self, ssid, password, channel, encrypt_proto):
+    def set_accesspoint_config(self, ssid, password, channel, encrypt_proto, debug=False):
         """Configure the parameters for the accesspoint mode. The module 
         must be in access point mode for this to work.
         After setting the parameters the module is reset to 
@@ -373,7 +373,7 @@ class ESP8266(object):
             raise CommandFailure('Invalid WIFI channel!')
         if encrypt_proto not in (0, 2, 3, 4) or type(encrypt_proto) is not int:
             raise CommandFailure('Invalid encryption protocol!')
-        self._set_command(CMDS_WIFI['AP_SET_PARAMS'], ssid, password, channel, encrypt_proto, debug=False)
+        self._set_command(CMDS_WIFI['AP_SET_PARAMS'], ssid, password, channel, encrypt_proto, debug=debug)
         self.reset()
         
     def get_accesspoint_config(self):
@@ -396,7 +396,7 @@ class ESP8266(object):
         ToDo: Parse result and return python list of IPs (as str)."""
         return self._execute_command(CMDS_WIFI['AP_LIST_STATIONS'], debug=False)
     
-    def set_dhcp_config(self, mode, status):
+    def set_dhcp_config(self, mode, status, debug=False):
         """Set the DHCP configuration for a specific mode.
         
         Oddities:
@@ -415,54 +415,54 @@ class ESP8266(object):
             status = bool(status)
         if type(status) is bool:
             status = not status
-        return self._set_command(CMDS_WIFI['DHCP_CONFIG'], mode, status, debug=False)
+        return self._set_command(CMDS_WIFI['DHCP_CONFIG'], mode, status, debug=debug)
         
-    def set_autoconnect(self, autoconnect):
+    def set_autoconnect(self, autoconnect, debug=False):
         """Set if the module should connnect to an access point on 
         startup."""
-        return self._set_command(CMDS_WIFI['SET_AUTOCONNECT'], autoconnect, debug=False)
+        return self._set_command(CMDS_WIFI['SET_AUTOCONNECT'], autoconnect, debug=debug)
     
-    def get_station_ip(self):
+    def get_station_ip(self, debug=False):
         """get the IP address of the module in station mode.
         The IP address must be given as a string. No check on the 
         correctness of the IP address is made."""
-        return self._query_command(CMDS_WIFI['SET_STATION_IP'], debug=False)
+        return self._query_command(CMDS_WIFI['SET_STATION_IP'], debug=debug)
         
-    def set_station_ip(self, ip_str):
+    def set_station_ip(self, ip_str, debug=False):
         """Set the IP address of the module in station mode.
         The IP address must be given as a string. No check on the 
         correctness of the IP address is made."""
-        return self._set_command(CMDS_WIFI['SET_STATION_IP'], ip_str, debug=False)
+        return self._set_command(CMDS_WIFI['SET_STATION_IP'], ip_str, debug=debug)
     
-    def get_accesspoint_ip(self):
+    def get_accesspoint_ip(self, debug=False):
         """get the IP address of the module in access point mode.
         The IP address must be given as a string. No check on the 
         correctness of the IP address is made."""
-        return self._query_command(CMDS_WIFI['SET_AP_IP'], debug=False)
+        return self._query_command(CMDS_WIFI['SET_AP_IP'], debug=debug)
         
-    def set_accesspoint_ip(self, ip_str):
+    def set_accesspoint_ip(self, ip_str, debug=False):
         """Set the IP address of the module in access point mode.
         The IP address must be given as a string. No check on the 
         correctness of the IP address is made."""
-        return self._set_command(CMDS_WIFI['SET_AP_IP'], ip_str, debug=False)
+        return self._set_command(CMDS_WIFI['SET_AP_IP'], ip_str, debug=debug)
     
     def get_connection_status(self):
         """Get connection information.
         ToDo: Parse returned data and return python data structure."""
         return self._execute_command(CMDS_IP['STATUS'])
         
-    def start_connection(self, protocol, dest_ip, dest_port):
+    def start_connection(self, protocol, dest_ip, dest_port, debug=False):
         """Start a TCP or UDP connection. 
         ToDo: Implement MUX mode. Currently only single connection mode is
         supported!"""
-        self._set_command(CMDS_IP['START'], protocol, dest_ip, dest_port, debug=False)
+        self._set_command(CMDS_IP['START'], protocol, dest_ip, dest_port, debug=debug)
         
-    def send(self, data):
+    def send(self, data, debug=False):
         """Send data over the current connection."""
-        self._set_command(CMDS_IP['SEND'], len(data), debug=True)
+        self._set_command(CMDS_IP['SEND'], len(data), debug=debug)
         print(b'>' + data)
         self.uart.write(data)
         
-    def ping(self, destination):
+    def ping(self, destination, debug=False):
         """Ping the destination address or hostname."""
-        return self._set_command(CMDS_IP['PING'], destination)
+        return self._set_command(CMDS_IP['PING'], destination, debug=debug)
