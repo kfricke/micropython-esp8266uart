@@ -211,6 +211,13 @@ class ESP8266(object):
                 'mac': mac, 
                 'channel': int(channel)
                 }
+        elif len(ap_params) == 3:
+            (enc_mode, ssid, rssi) = ap_params
+             ap = {
+                'encryption_protocol': int(enc_mode),
+                'ssid': ssid,
+                'rssi': int(rssi),
+                }
         else:
             ap = None
         return ap
